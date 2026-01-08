@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Adventure (Rules Added)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, serverTimestamp, collection, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyB1OQteZ7lo4N2wiFLVGULea152pUk1kp4",
+            authDomain: "myspacegame-6b940.firebaseapp.com",
+            projectId: "myspacegame-6b940",
+            storageBucket: "myspacegame-6b940.firebasestorage.app",
+            messagingSenderId: "67671889390",
+            appId: "1:67671889390:web:580f7459c792a88b10eaff",
+            measurementId: "G-ZKLW04NJ6Q"
+        };
+
+        // --- SETUP ---
+        let db, auth;
+        const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'space-adventure-default';
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (e) { console.error(e); }
+
+        // สุ่ม ID ใหม่ทุกครั้ง (เพื่อให้เล่นจอแยกได้) แต่จะจำชื่อไว้
+        const myPlayerId = "player_" + Math.random().toString(36).substr(2, 9);
+        let currentRoomId = null;
+        let gameState = null;
+        let unsubscribe = null;
+
+        // --- INIT ---
+        async function initGame() {
+            try {
+                await signInAnonymously(auth);
+                document.getElementById('loading-screen').style.display = 'none';
+                document.getElementById('lobby-screen').style.display = 'flex';
+                
+                // ดึงชื่อที่เคยจำไว้มาใส่
+                const savedName = localStorage.getItem('space_adventure_username');
+                if (savedName) {
+                    document.getElementById('p-name-input').value = savedName;
+                }
+                
+                console.log("My ID:", myPlayerId);
+            } catch (e) {
+                alert("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: " + e.message);
+            }
+        }
+        window.onload = initGame;
+
+        // --- HELPER ---
+        const getRoomRef = (rid) => doc(db, "rooms", rid);
+        const getGlobalScoreRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'global_scores');
+
+        // --- ACTIONS ---
+        window.createRoom = async () => {
+            const nameInput = document.getElementById('p-name-input');
+            const name = nameInput.value.trim();
+            
+            // 1. บังคับใส่ชื่อ
+            if (!name) {
+                alert("กรุณาใส่ชื่อของคุณก่อนเริ่มเกมครับ!");
+                nameInput.focus();
+                nameInput.classList.add('ring-4', 'ring-red-500'); // เอฟเฟกต์เตือน
+                setTimeout(() => nameInput.classList.remove('ring-4', 'ring-red-500'), 2000);
+                return;
+            }
+
+            // จำชื่อไว้ในเครื่อง
+            localStorage.setItem('space_adventure_username', name);
+
+            const btn = document.getElementById('create-btn');
+            btn.innerHTML = '⏳ กำลังสร้าง...'; btn.disabled = true;
+
+            const roomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            const difficulty = document.getElementById('diff-select').value;
+
+            const roomData = {
+                hostId: myPlayerId,
+                status: 'waiting',
+                difficulty: difficulty,
+                winnerId: null,
+                players: [{
+                    id: myPlayerId,
+                    name: name,
+                    pos: 1,
+                    color: '#facc15',
+                    score: 0
+                }],
+                turnIndex: 0,
+                lastAction: 'สร้างห้องสำเร็จ',
+                createdAt: serverTimestamp()
+            };
+
+            try {
+                await setDoc(getRoomRef(roomId), roomData);
+                enterRoom(roomId);
+            } catch (e) {
+                alert("สร้างห้องล้มเหลว: " + e.message);
+                btn.innerHTML = '<i class="fas fa-plus mr-1"></i> สร้างห้อง'; btn.disabled = false;
+            }
+        };
+
+        window.joinRoom = async () => {
+            const nameInput = document.getElementById('p-name-input');
+            const name = nameInput.value.trim();
+            const roomId = document.getElementById('room-code-input').value.trim().toUpperCase();
+
+            // 1. บังคับใส่ชื่อ
+            if (!name) {
+                alert("กรุณาใส่ชื่อของคุณก่อนเริ่มเกมครับ!");
+                nameInput.focus();
+                return;
+            }
+            
+            if (!roomId) return alert("ใส่รหัสห้องก่อนนะครับ");
+
+            const btn = document.getElementById('join-btn');
+            btn.innerHTML = '⏳'; btn.disabled = true;
+
+            try {
+                const roomRef = getRoomRef(roomId);
+                const snap = await getDoc(roomRef);
+
+                if (!snap.exists()) throw new Error("ไม่พบห้องนี้");
+                const data = snap.data();
+
+                // 2. เช็คชื่อซ้ำ (ในห้องเดียวกันห้ามชื่อเหมือนกัน)
+                const isNameTaken = data.players.some(p => p.name === name && p.id !== myPlayerId);
+                if (isNameTaken) {
+                    throw new Error(`ชื่อ "${name}" มีคนใช้ในห้องนี้แล้ว กรุณาเปลี่ยนชื่อใหม่`);
+                }
+
+                // จำชื่อไว้
+                localStorage.setItem('space_adventure_username', name);
+
+                const isAlreadyIn = data.players.find(p => p.id === myPlayerId);
+                
+                if (!isAlreadyIn) {
+                    if (data.status !== 'waiting') throw new Error("เกมเริ่มไปแล้ว");
+                    if (data.players.length >= 4) throw new Error("ห้องเต็มแล้ว");
+
+                    const colors = ['#facc15', '#ef4444', '#3b82f6', '#22c55e'];
+                    const newPlayer = {
+                        id: myPlayerId,
+                        name: name,
+                        pos: 1,
+                        color: colors[data.players.length] || '#fff',
+                        score: 0
+                    };
+                    
+                    await updateDoc(roomRef, { 
+                        players: [...data.players, newPlayer] 
+                    });
+                }
+                
+                enterRoom(roomId);
+
+            } catch (e) {
+                alert(e.message);
+                btn.innerHTML = 'เข้าร่วม'; btn.disabled = false;
+            }
+        };
+
+        function enterRoom(roomId) {
+            if (unsubscribe) unsubscribe();
+
+            currentRoomId = roomId;
+            document.getElementById('lobby-screen').style.display = 'none';
+            document.getElementById('game-room').style.display = 'flex';
+            document.getElementById('room-id-disp').innerText = roomId;
+
+            unsubscribe = onSnapshot(getRoomRef(roomId), (doc) => {
+                if (doc.exists()) {
+                    gameState = doc.data();
+                    renderGame(gameState);
+                } else {
+                    alert("ห้องนี้ถูกลบไปแล้ว");
+                    leaveRoom();
+                }
+            });
+        }
+
+        window.leaveRoom = () => {
+            if (unsubscribe) unsubscribe();
+            unsubscribe = null;
+            currentRoomId = null;
+            gameState = null;
+
+            document.getElementById('game-room').style.display = 'none';
+            document.getElementById('leaderboard-modal').style.display = 'none';
+            document.getElementById('global-lb-modal').style.display = 'none';
+            document.getElementById('rules-modal').style.display = 'none';
+            document.getElementById('lobby-screen').style.display = 'flex';
+            
+            document.getElementById('create-btn').innerHTML = '<i class="fas fa-plus mr-1"></i> สร้างห้อง';
+            document.getElementById('create-btn').disabled = false;
+            document.getElementById('join-btn').innerHTML = 'เข้าร่วม';
+            document.getElementById('join-btn').disabled = false;
+        };
+
+        window.startGameHost = async () => {
+            if (!gameState || gameState.hostId !== myPlayerId) return;
+            try {
+                await updateDoc(getRoomRef(currentRoomId), { status: 'playing' });
+            } catch (e) {
+                alert("เริ่มเกมไม่ได้: " + e.message);
+            }
+        };
+
+        window.resetGameHost = async () => {
+            if (!gameState || gameState.hostId !== myPlayerId) return;
+            const resetPlayers = gameState.players.map(p => ({...p, pos: 1, score: 0}));
+            try {
+                await updateDoc(getRoomRef(currentRoomId), { 
+                    status: 'waiting',
+                    players: resetPlayers,
+                    turnIndex: 0,
+                    winnerId: null,
+                    lastAction: 'รีเซ็ตเกมแล้ว'
+                });
+            } catch (e) {
+                alert("รีเซ็ตไม่ได้: " + e.message);
+            }
+        };
+
+        // --- RULES LOGIC ---
+        window.openRules = () => {
+            document.getElementById('rules-modal').style.display = 'flex';
+        };
+
+        window.closeRules = () => {
+            document.getElementById('rules-modal').style.display = 'none';
+        };
+
+        // --- GLOBAL LEADERBOARD LOGIC ---
+        window.viewGlobalRankings = async () => {
+            const list = document.getElementById('global-lb-list');
+            const filterDiff = document.getElementById('gl-diff-filter').value;
+            
+            list.innerHTML = '<div class="text-center text-slate-400 py-4"><i class="fas fa-spinner fa-spin"></i> กำลังโหลด...</div>';
+            document.getElementById('global-lb-modal').style.display = 'flex';
+
+            try {
+                const querySnapshot = await getDocs(getGlobalScoreRef());
+                let scores = [];
+                querySnapshot.forEach((doc) => {
+                    const d = doc.data();
+                    if (filterDiff === 'all' || d.difficulty === filterDiff) {
+                        scores.push(d);
+                    }
+                });
+
+                scores.sort((a, b) => b.score - a.score);
+                scores = scores.slice(0, 10);
+
+                list.innerHTML = '';
+                if (scores.length === 0) {
+                    list.innerHTML = '<div class="text-center text-slate-500 py-4">ยังไม่มีผู้กล้าในหมวดนี้</div>';
+                    return;
+                }
+
+                scores.forEach((s, idx) => {
+                    let rank = idx + 1;
+                    let rankIcon = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `<span class="text-slate-500 text-sm font-bold w-6 inline-block text-center">#${rank}</span>`;
+                    let colorClass = rank === 1 ? 'border-yellow-500 bg-yellow-900/10' : 'border-slate-700 bg-slate-800';
+                    let diffBadge = '';
+                    
+                    if (filterDiff === 'all' && s.difficulty) {
+                        const badgeColor = s.difficulty === 'easy' ? 'bg-green-500/20 text-green-400' : s.difficulty === 'medium' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400';
+                        diffBadge = `<span class="text-[9px] px-1.5 py-0.5 rounded ml-2 ${badgeColor}">${s.difficulty.toUpperCase()}</span>`;
+                    }
+
+                    list.innerHTML += `
+                        <div class="flex items-center justify-between p-3 rounded-lg border ${colorClass} mb-2">
+                            <div class="flex items-center gap-3">
+                                <span class="text-xl">${rankIcon}</span>
+                                <div>
+                                    <span class="text-white font-bold">${s.name}</span>
+                                    ${diffBadge}
+                                </div>
+                            </div>
+                            <span class="text-cyan-400 font-mono font-bold">${s.score} pts</span>
+                        </div>
+                    `;
+                });
+
+            } catch (e) {
+                console.error(e);
+                list.innerHTML = '<div class="text-center text-red-400 py-4">โหลดข้อมูลไม่สำเร็จ</div>';
+            }
+        };
+
+        window.closeGlobalLb = () => {
+            document.getElementById('global-lb-modal').style.display = 'none';
+        };
+
+        // --- IN-GAME RANKING LOGIC ---
+        window.viewRankings = () => {
+            if (gameState) {
+                showLeaderboard(gameState, gameState.hostId === myPlayerId, true);
+            }
+        };
+
+        window.closeLeaderboard = () => {
+            document.getElementById('leaderboard-modal').style.display = 'none';
+        };
+
+        // --- RENDER ---
+        function renderGame(data) {
+            const isHost = data.hostId === myPlayerId;
+            const myTurn = data.players[data.turnIndex].id === myPlayerId;
+            
+            const diffLabel = data.difficulty === 'easy' ? 'ง่าย' : 
+                              data.difficulty === 'medium' ? 'ปานกลาง' : 'ยาก';
+            document.getElementById('room-diff-disp').innerText = diffLabel;
+
+            // 1. Lobby
+            if (data.status === 'waiting') {
+                document.getElementById('waiting-area').style.display = 'block';
+                document.getElementById('game-area').style.display = 'none';
+                document.getElementById('leaderboard-modal').style.display = 'none';
+                document.getElementById('rank-btn').style.display = 'none';
+                
+                const list = document.getElementById('player-list');
+                list.innerHTML = '';
+                data.players.forEach(p => {
+                    list.innerHTML += `
+                        <div class="flex items-center justify-between bg-slate-800 p-3 rounded-lg border border-slate-700">
+                            <div class="flex items-center gap-3">
+                                <div class="w-4 h-4 rounded-full" style="background:${p.color}"></div>
+                                <span class="text-white font-bold">${p.name}</span>
+                                ${p.id === myPlayerId ? '<span class="text-xs text-green-400">(ฉัน)</span>' : ''}
+                            </div>
+                            ${p.id === data.hostId ? '👑' : ''}
+                        </div>
+                    `;
+                });
+
+                const startBtn = document.getElementById('start-game-btn');
+                const waitMsg = document.getElementById('guest-msg');
+                if (isHost) {
+                    startBtn.style.display = 'block';
+                    waitMsg.style.display = 'none';
+                    startBtn.innerText = `เริ่มภารกิจ (${data.players.length} คน)`;
+                } else {
+                    startBtn.style.display = 'none';
+                    waitMsg.style.display = 'block';
+                }
+            } 
+            
+            // 2. Playing OR Finished
+            else {
+                document.getElementById('waiting-area').style.display = 'none';
+                document.getElementById('game-area').style.display = 'flex';
+                document.getElementById('rank-btn').style.display = 'flex';
+                
+                if(document.getElementById('board').innerHTML === '') initBoard();
+                renderTokens(data.players);
+
+                const curP = data.players[data.turnIndex];
+                document.getElementById('turn-text').innerHTML = `ตาของ <span style="color:${curP.color}">${curP.name}</span>`;
+                document.getElementById('log-text').innerText = data.lastAction;
+
+                const rollBtn = document.getElementById('roll-btn');
+                if (data.status === 'finished') {
+                    rollBtn.disabled = true;
+                    rollBtn.innerText = "จบเกมแล้ว";
+                    rollBtn.className = "btn-neon w-full bg-slate-700 opacity-50";
+                    showLeaderboard(data, isHost, false); 
+                } else {
+                    if (myTurn) {
+                        rollBtn.disabled = false;
+                        rollBtn.innerText = "🎲 สุ่มคำถาม";
+                        rollBtn.className = "btn-neon w-full animate-pulse";
+                    } else {
+                        rollBtn.disabled = true;
+                        rollBtn.innerText = `รอ ${curP.name}...`;
+                        rollBtn.className = "btn-neon w-full opacity-50 cursor-not-allowed";
+                    }
+                }
+            }
+        }
+
+        function showLeaderboard(data, isHost, isViewOnly) {
+            const modal = document.getElementById('leaderboard-modal');
+            modal.style.display = 'flex';
+            
+            const lbTitle = document.getElementById('lb-title');
+            const lbSub = document.getElementById('lb-sub');
+            const winnerAvatar = document.getElementById('winner-avatar-container');
+            const actionBtns = document.getElementById('lb-action-btns');
+            const closeBtn = document.getElementById('lb-close-btn');
+
+            const sortedPlayers = [...data.players].sort((a, b) => b.score - a.score);
+
+            if (isViewOnly) {
+                lbTitle.innerText = "อันดับคะแนน";
+                lbTitle.className = "text-3xl font-bold text-white mb-1";
+                lbSub.innerText = "ใครตอบถูกเยอะที่สุด?";
+                winnerAvatar.style.display = 'none';
+                actionBtns.style.display = 'none';
+                closeBtn.style.display = 'block';
+            } else {
+                const winner = sortedPlayers[0];
+                lbTitle.innerText = "สรุปผลคะแนน"; 
+                lbTitle.className = "text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-amber-500 mb-1";
+                lbSub.innerText = `ผู้ชนะ: ${winner.name}`;
+                
+                winnerAvatar.style.display = 'flex';
+                winnerAvatar.style.backgroundColor = winner.color; 
+                
+                actionBtns.style.display = 'flex';
+                closeBtn.style.display = 'none';
+                
+                document.getElementById('reset-game-btn').style.display = isHost ? 'block' : 'none';
+            }
+
+            const list = document.getElementById('ranking-list');
+            
+            list.innerHTML = `
+                <div class="grid grid-cols-4 gap-2 text-xs text-slate-400 uppercase font-bold border-b border-slate-700 pb-2 mb-2 px-2">
+                    <div class="col-span-1 text-center">อันดับ</div>
+                    <div class="col-span-2 text-left">ผู้เล่น</div>
+                    <div class="col-span-1 text-right">คะแนน</div>
+                </div>
+            `;
+            
+            sortedPlayers.forEach((p, index) => {
+                let rank = index + 1;
+                let medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
+                
+                let bgClass = 'bg-slate-800';
+                let borderClass = 'border-slate-700';
+                
+                if (rank === 1) { borderClass = 'border-yellow-500'; bgClass = 'bg-yellow-900/20'; }
+                else if (rank === 2) { borderClass = 'border-gray-400'; } 
+                else if (rank === 3) { borderClass = 'border-orange-700'; }
+                
+                const isMe = p.id === myPlayerId ? '<span class="text-[10px] bg-white/20 px-1 rounded ml-1 text-white">คุณ</span>' : '';
+
+                list.innerHTML += `
+                    <div class="grid grid-cols-4 gap-2 items-center p-2 rounded-lg border ${borderClass} ${bgClass} mb-1">
+                        <div class="col-span-1 text-center text-xl font-bold drop-shadow">${medal}</div>
+                        <div class="col-span-2 flex items-center gap-2 overflow-hidden">
+                            <div class="w-4 h-4 rounded-full flex-shrink-0 border border-white/20" style="background:${p.color}"></div>
+                            <div class="truncate text-sm font-bold text-white">${p.name}${isMe}</div>
+                        </div>
+                        <div class="col-span-1 text-right font-mono text-cyan-400 font-bold text-lg">${p.score}</div>
+                    </div>
+                `;
+            });
+        }
+
+        // --- GAMEPLAY ---
+        const boardSize = 36;
+        const snakes = { 14: 4, 20: 8, 32: 28, 34: 22 };
+        const ladders = { 3: 16, 12: 25, 21: 33 };
+
+        const allQuestions = {
+            easy: [
+                { q: "ศูนย์กลางของระบบสุริยะคือ?", a: ["โลก", "ดวงอาทิตย์", "ดวงจันทร์"], c: 1 },
+                { q: "เราอาศัยอยู่บนดาวเคราะห์ชื่อ?", a: ["อังคาร", "โลก", "ศุกร์"], c: 1 },
+                { q: "ดาวเคราะห์สีแดงคือ?", a: ["ดาวศุกร์", "ดาวอังคาร", "ดาวพฤหัส"], c: 1 },
+                { q: "โลกมีดวงจันทร์กี่ดวง?", a: ["1 ดวง", "2 ดวง", "ไม่มี"], c: 0 },
+                { q: "ดาวดวงใดเป็นดาวฤกษ์?", a: ["โลก", "ดาวอังคาร", "ดวงอาทิตย์"], c: 2 },
+                { q: "กาแล็กซีของเราชื่อว่า?", a: ["แอนดรอมิดา", "ทางช้างเผือก", "กังหัน"], c: 1 },
+                { q: "ดาวเคราะห์ดวงใดมีสิ่งมีชีวิต?", a: ["ดาวอังคาร", "โลก", "ดาวเสาร์"], c: 1 },
+                { q: "ชุดที่นักบินอวกาศใส่เรียกว่า?", a: ["ชุดว่ายน้ำ", "ชุดอวกาศ", "ชุดนอน"], c: 1 },
+                { q: "ดวงจันทร์มีแสงในตัวเองไหม?", a: ["มี", "ไม่มี (สะท้อนแสง)", "มีบางครั้ง"], c: 1 },
+                { q: "โลกหมุนรอบตัวเองใช้เวลา?", a: ["1 วัน", "1 เดือน", "1 ปี"], c: 0 }
+            ],
+            medium: [
+                { q: "ดาวเคราะห์ที่ใหญ่ที่สุด?", a: ["โลก", "พฤหัสบดี", "เสาร์"], c: 1 },
+                { q: "ดาวเคราะห์ฝาแฝดของโลก?", a: ["ดาวศุกร์", "ดาวอังคาร", "ดาวพุธ"], c: 0 },
+                { q: "พายุ 'จุดแดงใหญ่' อยู่บนดาวใด?", a: ["ดาวพฤหัส", "ดาวเสาร์", "ดาวอังคาร"], c: 0 },
+                { q: "แก๊สหลักในดวงอาทิตย์คือ?", a: ["ไฮโดรเจน", "ออกซิเจน", "คาร์บอน"], c: 0 },
+                { q: "มนุษย์คนแรกที่เหยียบดวงจันทร์?", a: ["ยูริ กาการิน", "นีล อาร์มสตรอง", "บัซ อัลดริน"], c: 1 },
+                { q: "ดาวเคราะห์ดวงใดอยู่ใกล้ดวงอาทิตย์ที่สุด?", a: ["ดาวพุธ", "ดาวศุกร์", "โลก"], c: 0 },
+                { q: "ระบบสุริยะมีดาวเคราะห์กี่ดวง?", a: ["7 ดวง", "8 ดวง", "9 ดวง"], c: 1 },
+                { q: "ดาวหางฮัลเลย์โคจรมาทุกๆ กี่ปี?", a: ["50 ปี", "76 ปี", "100 ปี"], c: 1 },
+                { q: "ดาวเคราะห์ที่มีวงแหวนสวยงามที่สุด?", a: ["ดาวเสาร์", "ดาวยูเรนัส", "ดาวพฤหัส"], c: 0 }
+            ],
+            hard: [
+                { q: "ภูเขาไฟโอลิมปัส อยู่ที่ไหน?", a: ["ดาวศุกร์", "ดาวอังคาร", "โลก"], c: 1 },
+                { q: "ดวงจันทร์ 'ไททัน' เป็นของดาวใด?", a: ["ดาวพฤหัส", "ดาวเสาร์", "ดาวยูเรนัส"], c: 1 },
+                { q: "ดาวเคราะห์ที่ร้อนที่สุด?", a: ["ดาวพุธ", "ดาวศุกร์", "ดาวอังคาร"], c: 1 },
+                { q: "ดาวใดหมุนรอบตัวเองแบบ 'ตะแคง'?", a: ["ดาวเนปจูน", "ดาวยูเรนัส", "ดาวเสาร์"], c: 1 },
+                { q: "ขอบฟ้าเหตุการณ์ (Event Horizon) เกี่ยวกับ?", a: ["หลุมดำ", "ดาวนิวตรอน", "ซูเปอร์โนวา"], c: 0 },
+                { q: "ดาวเคราะห์ดวงใดหมุนรอบตัวเองตามเข็มนาฬิกา?", a: ["ดาวศุกร์", "โลก", "ดาวยูเรนัส"], c: 0 },
+                { q: "แสงเดินทางด้วยความเร็วประมาณ?", a: ["300,000 กม./วิ", "1,000 กม./ชม.", "เสียง"], c: 0 },
+                { q: "ดาวเทียมดวงแรกของโลกชื่อ?", a: ["สปุตนิก 1", "เอกซ์พลอเรอร์ 1", "ไทยคม"], c: 0 },
+                { q: "หน่วยวัดระยะทางในอวกาศเรียกว่า?", a: ["กิโลเมตร", "ปีแสง", "ไมล์"], c: 1 }
+            ]
+        };
+
+        function initBoard() {
+            const b = document.getElementById('board');
+            b.innerHTML = '';
+            for(let i=0; i<36; i++) {
+                let r = Math.floor(i/6), c = i%6;
+                let num = (5-r)%2===0 ? (5-r)*6+c+1 : (5-r)*6+(5-c)+1;
+                let cell = document.createElement('div');
+                cell.className = "border border-white/10 flex justify-center items-center relative text-xs text-slate-500 bg-slate-900/50";
+                cell.id = `c-${num}`;
+                cell.innerText = num;
+                if(snakes[num]) cell.innerHTML+=`<i class="fas fa-biohazard absolute text-red-500/50 text-xl"></i>`;
+                if(ladders[num]) cell.innerHTML+=`<i class="fas fa-rocket absolute text-green-500/50 text-xl"></i>`;
+                b.appendChild(cell);
+            }
+        }
+
+        function renderTokens(players) {
+            const tk = document.getElementById('tokens');
+            players.forEach((p, idx) => {
+                let el = document.getElementById(`t-${p.id}`);
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = `t-${p.id}`;
+                    el.className = "absolute w-8 h-8 rounded-full border-2 border-white flex justify-center items-center transition-all duration-500 shadow-lg z-10";
+                    el.style.backgroundColor = p.color;
+                    el.innerHTML = `<i class="fas fa-user text-black text-xs"></i>`;
+                    tk.appendChild(el);
+                }
+                const cell = document.getElementById(`c-${p.pos}`);
+                if (cell) {
+                    const br = document.getElementById('board').getBoundingClientRect();
+                    const cr = cell.getBoundingClientRect();
+                    const offX = (idx%2)*5, offY = Math.floor(idx/2)*5;
+                    el.style.transform = `translate(${cr.left-br.left+10+offX}px, ${cr.top-br.top+10+offY}px)`;
+                }
+            });
+        }
+
+        window.handleRoll = () => {
+            const diff = gameState.difficulty || 'easy'; 
+            const qList = allQuestions[diff] || allQuestions['easy'];
+            const q = qList[Math.floor(Math.random()*qList.length)];
+
+            const m = document.getElementById('q-modal');
+            document.getElementById('q-text').innerText = q.q;
+            document.getElementById('q-badge').innerText = diff.toUpperCase();
+            document.getElementById('q-badge').className = `text-xs font-bold px-2 py-1 rounded mb-2 inline-block ${diff==='easy'?'bg-green-500/20 text-green-400':diff==='medium'?'bg-yellow-500/20 text-yellow-400':'bg-red-500/20 text-red-400'}`;
+
+            const opts = document.getElementById('q-opts');
+            opts.innerHTML = '';
+            q.a.forEach((ans, i) => {
+                opts.innerHTML += `<button onclick="ans(${i===q.c})" class="w-full bg-slate-700 p-3 rounded hover:bg-cyan-600 mb-2 text-left text-white">${ans}</button>`;
+            });
+            m.style.display = 'flex';
+        };
+
+        window.ans = async (correct) => {
+            document.getElementById('q-modal').style.display = 'none';
+            let curP = gameState.players[gameState.turnIndex];
+            let msg = "";
+            let nextPos = curP.pos;
+            let earnedScore = 0;
+
+            const newPlayers = [...gameState.players];
+            // หา index ของผู้เล่นปัจจุบันใน array ใหม่
+            const pIdx = gameState.turnIndex;
+
+            if (!correct) {
+                nextPos = Math.max(1, curP.pos - 1);
+                msg = `${curP.name} ตอบผิด! ถอยหลัง`;
+                // ตอบผิด ไม่ได้คะแนน (หรือจะลบก็ได้แต่เกมนี้ใจดีไม่ลบ)
+            } else {
+                let dice = Math.floor(Math.random()*6)+1;
+                nextPos += dice;
+                earnedScore = 10; 
+                msg = `${curP.name} ถูกต้อง (+10) ทอยได้ ${dice}`;
+                
+                if (nextPos > 36) nextPos = 36;
+                if (snakes[nextPos]) { nextPos = snakes[nextPos]; msg+="...เจอหลุมดำ!"; }
+                if (ladders[nextPos]) { nextPos = ladders[nextPos]; msg+="...วาร์ป!"; }
+            }
+
+            // อัปเดตคะแนน
+            newPlayers[pIdx].score = (newPlayers[pIdx].score || 0) + earnedScore;
+
+            let winnerId = null;
+            let status = 'playing';
+            
+            // เข้าเส้นชัย -> บันทึกลง Global Leaderboard
+            if (nextPos === 36) {
+                newPlayers[pIdx].score += 50; 
+                msg = `🏆 ${curP.name} เข้าเส้นชัย (+50)! จบเกม!`;
+                winnerId = curP.id; 
+                status = 'finished';
+
+                // SAVE TO GLOBAL DB WITH DIFFICULTY
+                try {
+                    await addDoc(getGlobalScoreRef(), {
+                        name: curP.name,
+                        score: newPlayers[pIdx].score,
+                        difficulty: gameState.difficulty, // บันทึกความยากด้วย
+                        date: serverTimestamp()
+                    });
+                } catch(e) { console.error("Save global score failed", e); }
+            }
+
+            newPlayers[pIdx].pos = nextPos;
+            const nextTurn = (gameState.turnIndex + 1) % newPlayers.length;
+
+            try {
+                await updateDoc(getRoomRef(currentRoomId), {
+                    players: newPlayers,
+                    turnIndex: nextTurn,
+                    lastAction: msg,
+                    status: status,
+                    winnerId: winnerId
+                });
+            } catch(e) { console.error(e); }
+        };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600&display=swap');
+        body { font-family: 'Kanit'; background: #0f172a; color: white; }
+        .btn-neon { background: #06b6d4; color: white; padding: 12px; border-radius: 10px; font-weight: bold; transition:0.2s; }
+        .btn-neon:hover { background: #0891b2; transform: scale(1.02); }
+        .glass { background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
+    </style>
+</head>
+<body class="flex justify-center min-h-screen bg-[url('https://cdn.pixabay.com/photo/2017/08/30/01/05/milky-way-2695569_960_720.jpg')] bg-cover bg-center">
+
+    <div id="loading-screen" class="fixed inset-0 bg-black flex flex-col justify-center items-center z-50">
+        <i class="fas fa-spinner fa-spin text-4xl text-cyan-400 mb-4"></i>
+        <p>กำลังเชื่อมต่อจักรวาล...</p>
+    </div>
+
+    <!-- LOBBY -->
+    <div id="lobby-screen" class="hidden w-full max-w-md p-6 flex-col gap-6 justify-center min-h-screen">
+        <div class="text-center">
+            <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500 mb-2">Space Adventure</h1>
+            <p class="text-slate-400">Solar System Edition</p>
+        </div>
+
+        <div class="glass p-6 rounded-2xl space-y-4">
+            <input id="p-name-input" type="text" placeholder="ชื่อของคุณ" class="w-full bg-slate-800 p-3 rounded text-center border border-slate-700 focus:border-cyan-400 outline-none text-white">
+            
+            <div class="p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                <label class="block text-sm text-slate-400 mb-2 text-left">ความยากคำถาม:</label>
+                <select id="diff-select" class="w-full bg-slate-900 p-2 rounded text-white border border-slate-600 mb-3">
+                    <option value="easy">😊 ง่าย (พื้นฐานดาวเคราะห์)</option>
+                    <option value="medium" selected>🤔 ปานกลาง (เจาะลึก)</option>
+                    <option value="hard">🤯 ยาก (ดาราศาสตร์ลึกซึ้ง)</option>
+                </select>
+                <div class="grid grid-cols-2 gap-2">
+                    <button id="create-btn" onclick="createRoom()" class="btn-neon bg-gradient-to-r from-purple-600 to-pink-600 border-none">
+                        <i class="fas fa-plus mr-1"></i> สร้างห้อง
+                    </button>
+                    <button onclick="viewGlobalRankings()" class="btn-neon bg-slate-700 hover:bg-slate-600 border-none text-sm">
+                        <i class="fas fa-trophy mr-1"></i> ทำเนียบยอดฝีมือ
+                    </button>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-2">
+                <button onclick="openRules()" class="btn-neon bg-blue-600 hover:bg-blue-500 border-none text-sm col-span-2">
+                    📜 กติกาการเล่น
+                </button>
+            </div>
+
+            <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-700"></div></div><div class="relative flex justify-center"><span class="bg-slate-900 px-2 text-sm text-slate-500">หรือ</span></div></div>
+
+            <div class="flex gap-2">
+                <input id="room-code-input" type="text" placeholder="รหัสห้องเพื่อน" class="flex-1 bg-slate-800 p-3 rounded text-center uppercase border border-slate-700 text-white">
+                <button id="join-btn" onclick="joinRoom()" class="btn-neon px-6">เข้าร่วม</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- GAME ROOM -->
+    <div id="game-room" class="hidden w-full max-w-md p-4 flex-col gap-4 min-h-screen">
+        <div class="glass p-3 rounded-xl flex justify-between items-center">
+            <div>
+                <p class="text-xs text-slate-400">ROOM CODE</p>
+                <h2 id="room-id-disp" class="text-2xl font-bold text-cyan-400 tracking-wider">...</h2>
+            </div>
+            <div class="flex gap-2 items-center">
+                <button id="rank-btn" onclick="viewRankings()" class="bg-yellow-500/20 text-yellow-400 px-4 py-2 rounded-lg text-sm hover:bg-yellow-500/30 transition-all font-bold hidden flex items-center gap-2">
+                    <i class="fas fa-list-ol"></i> คะแนนในห้อง
+                </button>
+                <div class="text-right">
+                    <div id="room-diff-disp" class="text-xs text-yellow-400 font-bold mb-1">...</div>
+                    <button onclick="leaveRoom()" class="bg-red-500/20 text-red-400 px-4 py-2 rounded-lg text-xs hover:bg-red-500/30 transition-all font-bold">ออก</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Waiting -->
+        <div id="waiting-area" class="glass p-6 rounded-2xl text-center space-y-4">
+            <h3 class="text-xl font-bold">รายชื่อนักบิน</h3>
+            <div id="player-list" class="space-y-2"></div>
+            
+            <button id="start-game-btn" onclick="startGameHost()" class="btn-neon w-full hidden animate-bounce">เริ่มเกม</button>
+            <p id="guest-msg" class="text-slate-400 text-sm animate-pulse">รอหัวหน้าห้องเริ่มเกม...</p>
+        </div>
+
+        <!-- Playing -->
+        <div id="game-area" class="hidden flex-col gap-4">
+            <div class="relative w-full pb-[100%] bg-black/50 rounded-xl overflow-hidden border border-white/10">
+                <div id="board" class="absolute inset-0 grid grid-cols-6 grid-rows-6"></div>
+                <div id="tokens" class="absolute inset-0 pointer-events-none"></div>
+            </div>
+
+            <div class="glass p-4 rounded-xl text-center space-y-3">
+                <div id="turn-text" class="text-lg font-bold">...</div>
+                <div id="log-text" class="text-xs text-slate-400 min-h-[1.5em]">...</div>
+                <button id="roll-btn" onclick="handleRoll()" class="btn-neon w-full">โหลด...</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ROOM LEADERBOARD (In-game) -->
+    <div id="leaderboard-modal" class="fixed inset-0 bg-black/95 z-[70] hidden justify-center items-center p-6 backdrop-blur-sm">
+        <div class="glass w-full max-w-sm p-6 rounded-3xl text-center border-2 border-yellow-500/50 shadow-[0_0_50px_rgba(234,179,8,0.3)] animate-bounce-in">
+            <div class="mb-4">
+                <div id="winner-avatar-container" class="w-24 h-24 rounded-full mx-auto flex items-center justify-center text-5xl shadow-2xl mb-3 ring-4 ring-yellow-500 bg-white/20">
+                    <i class="fas fa-trophy text-yellow-400 drop-shadow-md"></i>
+                </div>
+                <h2 id="lb-title" class="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-amber-500">...</h2>
+                <p class="text-slate-300 text-sm mt-1" id="lb-sub">...</p>
+            </div>
+
+            <div class="bg-slate-900/80 rounded-xl p-4 mb-4 max-h-[200px] overflow-y-auto border border-slate-700">
+                <div id="ranking-list" class="space-y-2"></div>
+            </div>
+
+            <div class="flex flex-col gap-3">
+                <div id="lb-action-btns" class="hidden flex-col gap-2 w-full">
+                    <button id="reset-game-btn" onclick="resetGameHost()" class="btn-neon w-full bg-gradient-to-r from-green-500 to-emerald-600 border-none shadow-lg shadow-green-500/30">
+                        <i class="fas fa-redo mr-2"></i> เล่นใหม่อีกครั้ง
+                    </button>
+                    <button onclick="leaveRoom()" class="p-2 text-slate-400 hover:text-white text-sm transition-colors">ออกจากห้อง</button>
+                </div>
+                <button id="lb-close-btn" onclick="closeLeaderboard()" class="btn-neon w-full bg-slate-700 hidden">ปิดหน้าต่าง</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- GLOBAL LEADERBOARD MODAL -->
+    <div id="global-lb-modal" class="fixed inset-0 bg-black/95 z-[80] hidden justify-center items-center p-6 backdrop-blur-sm">
+        <div class="glass w-full max-w-sm p-6 rounded-3xl border-2 border-purple-500/50 shadow-[0_0_50px_rgba(168,85,247,0.3)]">
+            <h2 class="text-2xl font-bold text-center text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400 mb-2">🏆 ทำเนียบยอดฝีมือ</h2>
+            
+            <!-- Filter Dropdown -->
+            <div class="flex justify-center mb-4">
+                <select id="gl-diff-filter" onchange="viewGlobalRankings()" class="bg-slate-800 text-white text-sm rounded-lg p-2 border border-slate-600 focus:outline-none focus:border-purple-500">
+                    <option value="all">⭐ รวมทุกระดับ</option>
+                    <option value="easy">😊 ระดับง่าย</option>
+                    <option value="medium">🤔 ระดับปานกลาง</option>
+                    <option value="hard">🤯 ระดับยาก</option>
+                </select>
+            </div>
+
+            <div class="bg-slate-900/80 rounded-xl p-4 mb-4 h-[300px] overflow-y-auto border border-slate-700" id="global-lb-list">
+                <!-- Content injected here -->
+            </div>
+            <button onclick="closeGlobalLb()" class="btn-neon w-full bg-slate-700 hover:bg-slate-600 border-none">ปิด</button>
+        </div>
+    </div>
+
+    <!-- RULES MODAL -->
+    <div id="rules-modal" class="fixed inset-0 bg-black/95 z-[90] hidden justify-center items-center p-6 backdrop-blur-sm">
+        <div class="glass w-full max-w-sm p-6 rounded-3xl border-2 border-blue-500/50 shadow-[0_0_50px_rgba(59,130,246,0.3)]">
+            <h2 class="text-2xl font-bold text-center text-blue-400 mb-4">📜 กติกาการเล่น</h2>
+            <div class="text-slate-300 text-sm space-y-3 overflow-y-auto max-h-[300px] pr-2">
+                <p><strong>1. เป้าหมาย:</strong> เดินทางไปถึงช่อง 36 (ดาวเคราะห์บ้านเกิด) ให้ได้</p>
+                <p><strong>2. การเดิน:</strong> ผลัดกันตอบคำถาม
+                    <br><span class="text-green-400">✔ ตอบถูก:</span> ได้ทอยเต๋าเดินหน้า (+10 คะแนน)
+                    <br><span class="text-red-400">✖ ตอบผิด:</span> ถอยหลัง 1 ช่อง (ไม่ได้คะแนน)
+                </p>
+                <p><strong>3. ช่องพิเศษ:</strong>
+                    <br>🚀 <strong>ยานอวกาศ (บันได):</strong> วาร์ปขึ้นไปข้างหน้า
+                    <br>☣️ <strong>หลุมดำ (งู):</strong> โดนดูดลงมาข้างล่าง
+                </p>
+                <p><strong>4. การชนะ:</strong>
+                    <br>คนที่ถึงช่อง 36 คนแรก จะได้โบนัส <span class="text-yellow-400">+50 คะแนน</span> และจบเกมทันที
+                    <br><strong>🏆 ผู้ชนะตัวจริง คือคนที่มีคะแนนรวมเยอะที่สุด!</strong>
+                </p>
+            </div>
+            <button onclick="closeRules()" class="btn-neon w-full bg-slate-700 hover:bg-slate-600 border-none mt-4">เข้าใจแล้ว</button>
+        </div>
+    </div>
+
+    <!-- QUIZ MODAL -->
+    <div id="q-modal" class="fixed inset-0 bg-black/90 z-[60] hidden justify-center items-center p-6">
+        <div class="glass w-full max-w-sm p-6 rounded-2xl text-center">
+            <span id="q-badge">...</span>
+            <h3 class="text-xl font-bold text-cyan-400 mb-4">คำถาม!</h3>
+            <p id="q-text" class="text-lg mb-6">...</p>
+            <div id="q-opts" class="space-y-2"></div>
+        </div>
+    </div>
+
+</body>
+</html>
+
+
