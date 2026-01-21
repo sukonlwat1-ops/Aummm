@@ -302,6 +302,9 @@
         window.openGlobalLeaderboard=()=>{document.getElementById('global-leaderboard-modal').style.display='flex';filterGlobalLeaderboard();};
         window.closeGlobalLeaderboard=()=>{document.getElementById('global-leaderboard-modal').style.display='none';};
         window.filterGlobalLeaderboard = async () => { const l = document.getElementById('gl-list'); l.innerHTML = '<div class="text-center py-4 text-xs text-slate-400">Loading data...</div>'; const s = await getDocs(getGlobalScoreRef()); let sc = []; s.forEach(x => { const dat = x.data(); const k = dat.playerId || dat.name; let f = sc.find(i => i.pid === k); if(f) f.score += dat.score; else sc.push({ name: dat.name, score: dat.score, char: dat.char, pid: k }); }); sc.sort((a,b) => b.score - a.score); sc = sc.slice(0, 30); let h = ''; if(sc.length === 0) h = '<div class="text-center text-slate-500 py-4 text-xs">No Data</div>'; else { h += `<div class="grid grid-cols-12 gap-1 text-[10px] text-slate-500 uppercase mb-2 px-2 font-bold"><div class="col-span-2 text-center">#</div><div class="col-span-4">PILOT</div><div class="col-span-3 text-center">RANK</div><div class="col-span-3 text-right">XP</div></div>`; sc.forEach((p, i) => { const me = p.pid === myPlayerId; let rankClass = ''; if (i === 0) rankClass = 'rank-row-1'; else if (i === 1) rankClass = 'rank-row-2'; else if (i === 2) rankClass = 'rank-row-3'; const rData = getRankData(p.score); h += `<div class="grid grid-cols-12 gap-1 items-center p-2 rounded-lg mb-1 transition bg-slate-800/40 ${me ? 'border border-cyan-500/50 bg-cyan-900/20' : 'border border-white/5'} ${rankClass}"><div class="col-span-2 text-center font-bold text-sm text-slate-300">${i+1}</div><div class="col-span-4 truncate"><div class="font-bold text-xs ${me ? 'text-cyan-300' : 'text-slate-200'}">${p.char} ${p.name}</div></div><div class="col-span-3 text-center"><span class="text-[9px] px-1.5 py-0.5 rounded ${rData.c} bg-black/20 font-bold">${rData.t.split(' ')[1] || rData.t}</span></div><div class="col-span-3 text-right font-mono text-xs text-yellow-400">${p.score.toLocaleString()}</div></div>`; }); } l.innerHTML = h; };
+        
+        window.openCredits=()=>{document.getElementById('credits-modal').style.display='flex'; window.playSound('pop');}; 
+        window.closeCredits=()=>{document.getElementById('credits-modal').style.display='none';};
         window.openRules=()=>{document.getElementById('rules-modal').style.display='flex'; window.playSound('pop');}; 
         window.closeRules=()=>{document.getElementById('rules-modal').style.display='none';};
 
@@ -351,49 +354,11 @@
                 } else if (!isMyTurn) { actionContainer.innerHTML = `<div class="w-full h-full flex items-center justify-center text-slate-500 bg-slate-800/30 rounded-xl text-sm italic">Waiting for pilot...</div>`; }
             } else if (state.status === 'finished') {
                 if(timerInterval) clearInterval(timerInterval);
-                const isSolo = state.players.length === 1;
-                
-                // Sort for display logic
-                let sortedPlayers = [];
-                const winner = state.players.find(p => p.id === state.winnerId);
-                if (winner) {
-                    sortedPlayers.push(winner);
-                    const losers = state.players.filter(p => p.id !== state.winnerId);
-                    losers.sort((a, b) => { if (b.pos !== a.pos) return b.pos - a.pos; return b.score - a.score; });
-                    sortedPlayers = sortedPlayers.concat(losers);
-                } else { sortedPlayers = state.players; } // Timeout/All left
-
+                const sortedPlayers = [...state.players].sort((a,b) => b.score - a.score);
                 document.getElementById('leaderboard-modal').style.display = 'flex';
-                let resultTitle = "MISSION COMPLETE"; 
-                if (isSolo && !state.winnerId) resultTitle = "MISSION FAILED";
-
+                let resultTitle = "MISSION COMPLETE"; if (state.players.length === 1 && !state.winnerId) resultTitle = "MISSION FAILED";
                 document.getElementById('result-title').innerText = resultTitle;
-                
-                document.getElementById('ranking-list').innerHTML = sortedPlayers.map((p, i) => {
-                    let deltaText = "", deltaClass = "";
-                    if (isSolo) {
-                        if (state.winnerId) { deltaText = "+500"; deltaClass = "text-green-400"; }
-                        else { deltaText = "-200"; deltaClass = "text-red-400"; }
-                    } else {
-                        if (i === 0) { deltaText = "+500"; deltaClass = "text-green-400"; }
-                        else if (i === 1) { deltaText = "+200"; deltaClass = "text-yellow-400"; }
-                        else if (i === 2) { deltaText = "+50"; deltaClass = "text-blue-400"; }
-                        else { deltaText = "-200"; deltaClass = "text-red-400"; }
-                    }
-                    
-                    return `
-                    <div class="flex justify-between items-center p-3 ${p.id===state.winnerId ? 'bg-gradient-to-r from-yellow-900/40 to-transparent border-l-4 border-yellow-400' : 'bg-slate-800/50'} mb-2 rounded-lg">
-                        <span class="flex items-center gap-3">
-                            <span class="text-xl">${i===0 ? '🥇' : i===1 ? '🥈' : i===2 ? '🥉' : '💀'}</span> 
-                            <span class="text-white font-bold text-sm">${p.name}</span>
-                        </span>
-                        <div class="text-right">
-                            <span class="font-black text-lg ${deltaClass}">${deltaText} XP</span>
-                            <div class="text-[9px] text-slate-500 uppercase">Rank Update</div>
-                        </div>
-                    </div>`;
-                }).join('');
-                
+                document.getElementById('ranking-list').innerHTML = sortedPlayers.map((p, i) => `<div class="flex justify-between items-center p-3 ${p.id===state.winnerId ? 'bg-gradient-to-r from-yellow-900/40 to-transparent border-l-4 border-yellow-400' : 'bg-slate-800/50'} mb-2 rounded-lg"><span class="flex items-center gap-3"><span class="text-xl">${i===0 ? '🥇' : i===1 ? '🥈' : '🥉'}</span> <span class="text-white font-bold text-sm">${p.name}</span></span><span class="font-mono text-cyan-300 font-bold bg-cyan-900/30 px-2 py-1 rounded text-xs">${p.score} XP</span></div>`).join('');
                 const resetBtn = document.getElementById('reset-game-btn'); if(myPlayerId === state.hostId) { resetBtn.style.display = 'block'; } else { resetBtn.style.display = 'none'; }
             }
         }
@@ -673,7 +638,11 @@
             <div class="mb-6 text-center bg-slate-900/60 p-3 rounded-2xl border border-slate-700/50 shadow-inner"><label class="text-[10px] text-slate-400 mb-2 block uppercase tracking-[0.2em]">เลือกกัปตัน</label><div class="flex justify-center gap-4"><div onclick="selectChar('👨‍🚀', this)" class="char-select text-4xl cursor-pointer p-3 rounded-xl bg-slate-800 ring-2 ring-cyan-400 bg-cyan-900/30 scale-110 transition hover:scale-125">👨‍🚀</div><div onclick="selectChar('👽', this)" class="char-select text-4xl cursor-pointer p-3 rounded-xl bg-slate-800 transition hover:bg-slate-700 hover:scale-110">👽</div><div onclick="selectChar('🤖', this)" class="char-select text-4xl cursor-pointer p-3 rounded-xl bg-slate-800 transition hover:bg-slate-700 hover:scale-110">🤖</div></div></div>
             <div class="space-y-3 mb-6"><button id="create-btn" onclick="createRoom()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.4)] transition text-lg uppercase tracking-widest border border-emerald-400/50">สร้างห้องใหม่</button></div>
             <div class="flex gap-2 mb-6"><input type="text" id="room-code-input" class="flex-1 glass-input rounded-xl px-4 py-3 text-center uppercase tracking-[0.3em] font-black text-xl placeholder-slate-600 text-cyan-300" placeholder="CODE"><button onclick="joinRoom()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 rounded-xl font-bold transition shadow-lg text-sm border-t border-indigo-400">JOIN</button></div>
-            <div class="grid grid-cols-2 gap-3"><button onclick="openGlobalLeaderboard()" class="glass-panel hover:bg-slate-800 py-3 rounded-xl text-xs font-bold text-yellow-300 transition flex items-center justify-center gap-2 border border-yellow-500/20"><i class="fas fa-trophy text-lg"></i> อันดับโลก</button><button onclick="openRules()" class="glass-panel hover:bg-slate-800 py-3 rounded-xl text-xs font-bold text-cyan-300 transition flex items-center justify-center gap-2 border border-cyan-500/20"><i class="fas fa-book text-lg"></i> กติกา</button></div>
+            <div class="grid grid-cols-3 gap-2">
+                <button onclick="openGlobalLeaderboard()" class="glass-panel hover:bg-slate-800 py-3 rounded-xl text-xs font-bold text-yellow-300 transition flex items-center justify-center gap-2 border border-yellow-500/20 flex-col"><i class="fas fa-trophy text-lg"></i> อันดับโลก</button>
+                <button onclick="openRules()" class="glass-panel hover:bg-slate-800 py-3 rounded-xl text-xs font-bold text-cyan-300 transition flex items-center justify-center gap-2 border border-cyan-500/20 flex-col"><i class="fas fa-book text-lg"></i> กติกา</button>
+                <button onclick="openCredits()" class="glass-panel hover:bg-slate-800 py-3 rounded-xl text-xs font-bold text-pink-300 transition flex items-center justify-center gap-2 border border-pink-500/20 flex-col"><i class="fas fa-users text-lg"></i> ผู้จัดทำ</button>
+            </div>
         </div>
     </div>
 
@@ -726,8 +695,41 @@
         </div>
     </div>
 
-    <!-- Modals (Same as before but check styles) -->
+    <!-- Modals -->
     <div id="forgot-modal" class="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm hidden animate-fade-in"><div class="w-full max-w-sm p-6 rounded-3xl glass-panel border border-slate-600 shadow-2xl"><h3 class="text-lg font-bold text-white mb-4">Reset Password</h3><div id="forgot-step-1"><input type="text" id="forgot-name" class="w-full glass-input rounded-xl px-4 py-2 text-white mb-2 text-sm" placeholder="Pilot Name"><input type="email" id="forgot-email" class="w-full glass-input rounded-xl px-4 py-2 text-white mb-4 text-sm" placeholder="Email"><button id="send-email-btn" onclick="sendResetOTP()" class="w-full bg-cyan-600 text-white py-2 rounded-xl font-bold mb-2 text-sm">Send OTP</button><div id="hint-result" class="text-center text-xs text-slate-300 min-h-[20px]"></div></div><div id="forgot-step-2" style="display:none;"><input type="text" id="reset-otp" class="w-full glass-input rounded-xl px-4 py-2 text-white mb-2 text-center tracking-widest" placeholder="OTP CODE"><input type="password" id="reset-new-pass" class="w-full glass-input rounded-xl px-4 py-2 text-white mb-4" placeholder="New Password"><button onclick="confirmResetPassword()" class="w-full bg-green-600 text-white py-2 rounded-xl font-bold mb-2">Confirm</button><div id="reset-result" class="text-center text-xs text-slate-300"></div></div><button onclick="closeForgotPass()" class="w-full bg-slate-700 text-white py-2 rounded-xl mt-2 text-sm">Cancel</button></div></div>
+    
+    <div id="credits-modal" class="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 backdrop-blur-xl hidden animate-fade-in px-4">
+        <div class="glass-panel p-8 rounded-3xl border border-pink-500/30 max-w-sm w-full relative shadow-[0_0_50px_rgba(236,72,153,0.3)]">
+            <button onclick="closeCredits()" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xl"><i class="fas fa-times"></i></button>
+            <h2 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-purple-500 mb-6 text-center uppercase tracking-widest italic">ผู้จัดทำโครงงาน</h2>
+            <div class="space-y-4 text-center">
+                <div class="bg-slate-900/60 p-4 rounded-xl border border-white/10 hover:border-pink-500/50 transition">
+                    <div class="text-white font-bold text-lg">นาย รัชชานนท์ คำนาดี</div>
+                    <div class="text-slate-400 text-sm">ม.6/4 เลขที่ 5</div>
+                </div>
+                <div class="bg-slate-900/60 p-4 rounded-xl border border-white/10 hover:border-pink-500/50 transition">
+                    <div class="text-white font-bold text-lg">นาย สรวิช บุตรดี</div>
+                    <div class="text-slate-400 text-sm">ม.6/4 เลขที่ 11</div>
+                </div>
+                <div class="bg-slate-900/60 p-4 rounded-xl border border-white/10 hover:border-pink-500/50 transition">
+                    <div class="text-white font-bold text-lg">นาย ธเนศ เกตุหอม</div>
+                    <div class="text-slate-400 text-sm">ม.6/4 เลขที่ 17</div>
+                </div>
+                <div class="bg-slate-900/60 p-4 rounded-xl border border-white/10 hover:border-pink-500/50 transition">
+                    <div class="text-white font-bold text-lg">นางสาว ธนัชชา แสงอาทิตย์</div>
+                    <div class="text-slate-400 text-sm">ม.6/4 เลขที่ 29</div>
+                </div>
+                <div class="bg-slate-900/60 p-4 rounded-xl border border-white/10 hover:border-pink-500/50 transition">
+                    <div class="text-white font-bold text-lg">นางสาว ธนัญญา สอนน้อย</div>
+                    <div class="text-slate-400 text-sm">ม.6/4 เลขที่ 35</div>
+                </div>
+            </div>
+            <div class="mt-6 text-center text-[10px] text-slate-500">
+                Created with passion for Astronomy & Code
+            </div>
+        </div>
+    </div>
+
     <div id="question-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md hidden animate-fade-in px-4"><div class="glass-panel w-full max-w-md p-8 rounded-3xl border border-cyan-500/30 relative shadow-[0_0_60px_rgba(6,182,212,0.2)]"><div class="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-slate-900 p-4 rounded-full border-4 border-slate-700 shadow-xl"><div class="text-4xl">🧠</div></div><h3 class="text-center text-cyan-400 text-sm font-black mb-4 mt-4 uppercase tracking-[0.2em]">Data Verification</h3><h3 id="q-text" class="text-2xl font-bold text-white mb-8 text-center leading-relaxed font-sans">...</h3><div id="q-answers" class="flex flex-col gap-3"></div></div></div>
     <div id="dice-action-modal" class="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm hidden pointer-events-none"><div class="scene"><div class="cube" id="dice-cube"><div class="cube__face cube__face--1">1</div><div class="cube__face cube__face--2">2</div><div class="cube__face cube__face--3">3</div><div class="cube__face cube__face--4">4</div><div class="cube__face cube__face--5">5</div><div class="cube__face cube__face--6">6</div></div></div></div>
     
